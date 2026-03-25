@@ -1,36 +1,28 @@
-/**
- * SIGA Access Mail Processor — Google Apps Script
- *
- * Searches Gmail threads with subject "Acceso a SIGA".
- * For each thread:
- *   1. Scans the first message for image attachments and saves them to Drive.
- *   2. Reads the next message in the thread and extracts the first 4-digit sequence.
- *
- * Optimizations:
- *   - Fetches exactly the last MAX_THREADS threads in a single API call.
- *   - Batch loads all messages with GmailApp.getMessagesForThreads() — one API call total.
- *   - Drive folder is resolved once and reused across all threads.
- *   - Plain-text body is preferred over HTML to avoid regex overhead on markup.
- *
- * Permissions required: Gmail, Drive.
- * Run processNewSIGAThreads() manually or via a time-based trigger.
- */
+/*
+  processNewSIGAThreads – Google Apps Script
+  - Searches Gmail in pages of 500 (GmailApp.search limit) up to MAX_THREADS total.
+  - First message of each thread: saves image attachments to Drive.
+  - Second message (if present): extracts the first 4-digit code from plain body.
+  - Valid code  → image saved as  "<CODE>_<filename>"  in the root folder.
+  - No code or non-4-digit code → saved in the NO_CODE subfolder.
+  - Code is always uppercased.
+*/
 
 const CONFIG = {
   SUBJECT: "Acceso a SIGA",
   FOLDER_NAME: "SIGA Access Images",
-  MAX_THREADS: 100,
-  IMAGE_TYPES: new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp"]),
-  FOUR_DIGIT_REGEX: /\d{4}/,
+  MAX_THREADS: 2000,
+  PAGE_SIZE: 500,
+  NO_CODE_FOLDER: "NO_CODE",
+  IMAGE_TYPES: new Set(["image/jpeg", "image/png"]),
+  FOUR_DIGIT_REGEX: /^\d{4}$/,
 };
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
 function processNewSIGAThreads() {
-  const folder = getOrCreateFolder(CONFIG.FOLDER_NAME);
-  const threads = GmailApp.search(`subject:"${CONFIG.SUBJECT}"`, 0, CONFIG.MAX_THREADS);
+  const rootFolder = getOrCreateFolder(CONFIG.FOLDER_NAME);
+  const noCodeFolder = getOrCreateSubfolder(rootFolder, CONFIG.NO_CODE_FOLDER);
+
+  const threads = fetchAllThreads();
   const allMessages = GmailApp.getMessagesForThreads(threads);
   const results = [];
 
@@ -38,8 +30,13 @@ function processNewSIGAThreads() {
     const messages = allMessages[i];
     if (!messages.length) continue;
 
-    const code = messages.length > 1 ? extractFirstFourDigits(messages[1]) : null;
-    const imageSaved = saveImageAttachments(messages[0], folder, code);
+    const rawCode = messages.length > 1 ? extractFourDigitCode(messages[1]) : null;
+    const code = rawCode ? rawCode.toUpperCase() : null;
+    const isValidCode = code && CONFIG.FOUR_DIGIT_REGEX.test(code);
+
+    const targetFolder = isValidCode ? rootFolder : noCodeFolder;
+    const prefix = isValidCode ? code : "NO_CODE";
+    const imageSaved = saveImageAttachments(messages[0], targetFolder, prefix);
 
     results.push({
       subject: messages[0].getSubject(),
@@ -48,25 +45,40 @@ function processNewSIGAThreads() {
       code,
     });
 
-    Logger.log(`[OK] "${messages[0].getSubject()}" | image: ${imageSaved} | code: ${code}`);
+    Logger.log(`[OK] "${messages[0].getSubject()}" | image: ${imageSaved} | code: ${code} | valid: ${isValidCode}`);
   }
 
   Logger.log(`Processed ${results.length} thread(s).`);
   return results;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+function fetchAllThreads() {
+  const threads = [];
+  let start = 0;
+
+  while (start < CONFIG.MAX_THREADS) {
+    const page = GmailApp.search(`subject:"${CONFIG.SUBJECT}"`, start, CONFIG.PAGE_SIZE);
+    if (!page.length) break;
+    threads.push(...page);
+    start += page.length;
+    if (page.length < CONFIG.PAGE_SIZE) break;
+  }
+
+  return threads;
+}
 
 function getOrCreateFolder(name) {
   const iter = DriveApp.getFoldersByName(name);
   return iter.hasNext() ? iter.next() : DriveApp.createFolder(name);
 }
 
-function saveImageAttachments(message, folder, code) {
+function getOrCreateSubfolder(parent, name) {
+  const iter = parent.getFoldersByName(name);
+  return iter.hasNext() ? iter.next() : parent.createFolder(name);
+}
+
+function saveImageAttachments(message, folder, prefix) {
   const attachments = message.getAttachments({ includeInlineImages: true });
-  const prefix = code ?? "NO_CODE";
   let saved = false;
 
   for (const att of attachments) {
@@ -79,12 +91,7 @@ function saveImageAttachments(message, folder, code) {
   return saved;
 }
 
-function extractFirstFourDigits(message) {
-  const body = message.getPlainBody() || stripHtml(message.getBody());
-  const match = body.match(CONFIG.FOUR_DIGIT_REGEX);
+function extractFourDigitCode(message) {
+  const match = message.getPlainBody().match(/\d{4}/);
   return match ? match[0] : null;
-}
-
-function stripHtml(html) {
-  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
