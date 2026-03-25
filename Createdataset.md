@@ -1,10 +1,9 @@
 /*
   processNewSIGAThreads – Google Apps Script
   - Searches Gmail in pages of 500 (GmailApp.search limit) up to MAX_THREADS total.
-  - First message of each thread: saves image attachments to Drive.
-  - Second message (if present): extracts the first 4-digit code from plain body.
-  - Valid code  → image saved as  "<CODE>_<filename>"  in the root folder.
-  - No code or non-4-digit code → saved in the NO_CODE subfolder.
+  - Processes each page immediately to avoid the 500-thread limit on getMessagesForThreads.
+  - Valid code (first 4 chars of body) → image saved in root folder as "<CODE>.<ext>".
+  - No code → saved in the NO_CODE subfolder as "NO_CODE.<ext>".
   - Code is always uppercased.
 */
 
@@ -15,56 +14,41 @@ const CONFIG = {
   PAGE_SIZE: 500,
   NO_CODE_FOLDER: "NO_CODE",
   IMAGE_TYPES: new Set(["image/jpeg", "image/png"]),
-  FOUR_DIGIT_REGEX: /^\d{4}$/,
 };
 
 function processNewSIGAThreads() {
   const rootFolder = getOrCreateFolder(CONFIG.FOLDER_NAME);
   const noCodeFolder = getOrCreateSubfolder(rootFolder, CONFIG.NO_CODE_FOLDER);
 
-  const threads = fetchAllThreads();
-  const allMessages = GmailApp.getMessagesForThreads(threads);
-  const results = [];
-
-  for (let i = 0; i < threads.length; i++) {
-    const messages = allMessages[i];
-    if (!messages.length) continue;
-
-    const rawCode = messages.length > 1 ? extractFourDigitCode(messages[1]) : null;
-    const code = rawCode ? rawCode.toUpperCase() : null;
-    const isValidCode = code && CONFIG.FOUR_DIGIT_REGEX.test(code);
-
-    const targetFolder = isValidCode ? rootFolder : noCodeFolder;
-    const prefix = isValidCode ? code : "NO_CODE";
-    const imageSaved = saveImageAttachments(messages[0], targetFolder, prefix);
-
-    results.push({
-      subject: messages[0].getSubject(),
-      date: messages[0].getDate(),
-      imageSaved,
-      code,
-    });
-
-    Logger.log(`[OK] "${messages[0].getSubject()}" | image: ${imageSaved} | code: ${code} | valid: ${isValidCode}`);
-  }
-
-  Logger.log(`Processed ${results.length} thread(s).`);
-  return results;
-}
-
-function fetchAllThreads() {
-  const threads = [];
   let start = 0;
+  let totalProcessed = 0;
 
   while (start < CONFIG.MAX_THREADS) {
-    const page = GmailApp.search(`subject:"${CONFIG.SUBJECT}"`, start, CONFIG.PAGE_SIZE);
-    if (!page.length) break;
-    threads.push(...page);
-    start += page.length;
-    if (page.length < CONFIG.PAGE_SIZE) break;
+    const threads = GmailApp.search(`subject:"${CONFIG.SUBJECT}"`, start, CONFIG.PAGE_SIZE);
+    if (!threads.length) break;
+
+    const allMessages = GmailApp.getMessagesForThreads(threads);
+
+    for (let i = 0; i < threads.length; i++) {
+      const messages = allMessages[i];
+      if (!messages.length) continue;
+
+      const rawCode = messages.length > 1 ? extractCode(messages[1]) : null;
+      const code = rawCode ? rawCode.toUpperCase() : null;
+
+      const targetFolder = code ? rootFolder : noCodeFolder;
+      const label = code ?? "NO_CODE";
+      const imageSaved = saveImageAttachments(messages[0], targetFolder, label);
+
+      Logger.log(`[OK] "${messages[0].getSubject()}" | image: ${imageSaved} | code: ${code}`);
+      totalProcessed++;
+    }
+
+    start += threads.length;
+    if (threads.length < CONFIG.PAGE_SIZE) break;
   }
 
-  return threads;
+  Logger.log(`Processed ${totalProcessed} thread(s).`);
 }
 
 function getOrCreateFolder(name) {
@@ -77,13 +61,14 @@ function getOrCreateSubfolder(parent, name) {
   return iter.hasNext() ? iter.next() : parent.createFolder(name);
 }
 
-function saveImageAttachments(message, folder, prefix) {
+function saveImageAttachments(message, folder, code) {
   const attachments = message.getAttachments({ includeInlineImages: true });
   let saved = false;
 
   for (const att of attachments) {
     if (!CONFIG.IMAGE_TYPES.has(att.getContentType().toLowerCase())) continue;
-    const filename = `${prefix}_${att.getName()}`;
+    const ext = att.getName().split(".").pop();
+    const filename = `${code}.${ext}`;
     folder.createFile(att.copyBlob().setName(filename));
     saved = true;
   }
@@ -91,7 +76,6 @@ function saveImageAttachments(message, folder, prefix) {
   return saved;
 }
 
-function extractFourDigitCode(message) {
-  const match = message.getPlainBody().match(/\d{4}/);
-  return match ? match[0] : null;
+function extractCode(message) {
+  return message.getPlainBody().substring(0, 4);
 }
