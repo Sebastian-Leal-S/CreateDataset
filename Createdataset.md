@@ -22,6 +22,8 @@ function processNewSIGAThreads() {
 
   let start = 0;
   let totalProcessed = 0;
+  let totalSaved = 0;
+  let totalNoCode = 0;
 
   while (start < CONFIG.MAX_THREADS) {
     const threads = GmailApp.search(`subject:"${CONFIG.SUBJECT}"`, start, CONFIG.PAGE_SIZE);
@@ -38,7 +40,13 @@ function processNewSIGAThreads() {
 
       const targetFolder = code ? rootFolder : noCodeFolder;
       const label = code ?? "NO_CODE";
-      const imageSaved = saveImageAttachments(messages[0], targetFolder, label, !!code);
+      const savedCount = saveImageAttachments(messages[0], targetFolder, label, !!code);
+
+      if (code) {
+        totalSaved += savedCount;
+      } else {
+        totalNoCode += savedCount;
+      }
 
       totalProcessed++;
     }
@@ -50,6 +58,9 @@ function processNewSIGAThreads() {
   }
 
   Logger.log(`Proceso finalizado. Total de threads procesados: ${totalProcessed}`);
+  Logger.log(`Imágenes guardadas en "${CONFIG.FOLDER_NAME}": ${totalSaved}`);
+  Logger.log(`Imágenes guardadas en "${CONFIG.FOLDER_NAME}/${CONFIG.NO_CODE_FOLDER}": ${totalNoCode}`);
+  Logger.log(`Total de imágenes guardadas: ${totalSaved + totalNoCode}`);
 }
 
 function getOrCreateFolder(name) {
@@ -64,7 +75,7 @@ function getOrCreateSubfolder(parent, name) {
 
 function saveImageAttachments(message, folder, code, hasValidCode) {
   const attachments = message.getAttachments({ includeInlineImages: true });
-  let saved = false;
+  let saved = 0;
 
   for (const att of attachments) {
     if (!CONFIG.IMAGE_TYPES.has(att.getContentType().toLowerCase())) continue;
@@ -78,7 +89,7 @@ function saveImageAttachments(message, folder, code, hasValidCode) {
       Logger.log(`[NO_CODE] Imagen guardada como ${filename} en "${CONFIG.FOLDER_NAME}/${CONFIG.NO_CODE_FOLDER}"`);
     }
 
-    saved = true;
+    saved++;
   }
 
   return saved;
