@@ -8,8 +8,8 @@
 */
 
 const CONFIG = {
-  SUBJECT: "Acceso a SIGA",
-  FOLDER_NAME: "SIGA Access Images",
+  SUBJECT: "033 - Acceso a SIGA - captcha image",
+  FOLDER_NAME: "captchas",
   MAX_THREADS: 2000,
   PAGE_SIZE: 500,
   NO_CODE_FOLDER: "NO_CODE",
@@ -38,17 +38,18 @@ function processNewSIGAThreads() {
 
       const targetFolder = code ? rootFolder : noCodeFolder;
       const label = code ?? "NO_CODE";
-      const imageSaved = saveImageAttachments(messages[0], targetFolder, label);
+      const imageSaved = saveImageAttachments(messages[0], targetFolder, label, !!code);
 
-      Logger.log(`[OK] "${messages[0].getSubject()}" | image: ${imageSaved} | code: ${code}`);
       totalProcessed++;
     }
+
+    Logger.log(`--- Segmento procesado: threads ${start + 1} a ${start + threads.length} | acumulado: ${totalProcessed} ---`);
 
     start += threads.length;
     if (threads.length < CONFIG.PAGE_SIZE) break;
   }
 
-  Logger.log(`Processed ${totalProcessed} thread(s).`);
+  Logger.log(`Proceso finalizado. Total de threads procesados: ${totalProcessed}`);
 }
 
 function getOrCreateFolder(name) {
@@ -61,7 +62,7 @@ function getOrCreateSubfolder(parent, name) {
   return iter.hasNext() ? iter.next() : parent.createFolder(name);
 }
 
-function saveImageAttachments(message, folder, code) {
+function saveImageAttachments(message, folder, code, hasValidCode) {
   const attachments = message.getAttachments({ includeInlineImages: true });
   let saved = false;
 
@@ -70,6 +71,13 @@ function saveImageAttachments(message, folder, code) {
     const ext = att.getName().split(".").pop();
     const filename = `${code}.${ext}`;
     folder.createFile(att.copyBlob().setName(filename));
+
+    if (hasValidCode) {
+      Logger.log(`[OK] Imagen guardada como ${filename} en "${CONFIG.FOLDER_NAME}"`);
+    } else {
+      Logger.log(`[NO_CODE] Imagen guardada como ${filename} en "${CONFIG.FOLDER_NAME}/${CONFIG.NO_CODE_FOLDER}"`);
+    }
+
     saved = true;
   }
 
